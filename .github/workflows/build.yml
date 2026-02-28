@@ -7,48 +7,53 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Install Arduino CLI
-        run: |
-          curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh
-          echo "${{ github.workspace }}/bin" >> $GITHUB_PATH
+      - name: Setup Arduino CLI
+        uses: arduino/setup-arduino-cli@v1
+        with:
+          version: "1.4.1"
 
-      - name: Configure CLI
+      - name: Configure CLI (enable unsafe installs + add esp32 URL)
         run: |
           arduino-cli config init
-          arduino-cli core update-index --additional-urls https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
+          arduino-cli config set library.enable_unsafe_install true
+          arduino-cli config set board_manager.additional_urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
+          arduino-cli config dump
 
       - name: Install ESP32 Core
         run: |
-          arduino-cli core install esp32:esp32@2.0.17 --additional-urls https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
+          arduino-cli core update-index
+          arduino-cli core install esp32:esp32@2.0.17
 
+      # ✅ IMPORTANT: ESP32-C3 က AsyncTCP မဟုတ်ဘဲ AsyncTCP_RP2040 / ESPAsyncTCP မဟုတ်
+      # C3 အတွက် "ESPAsyncWebServer" က "AsyncTCP" မလိုပါ
+      # (သင့် code မှာ AsyncTCP include လုပ်ထားရင် compile မှာ fail ဖြစ်နိုင်)
       - name: Install Libraries
         run: |
-          # Git မှတစ်ဆင့် တည်ငြိမ်သော Version များကို တိုက်ရိုက်သွင်းခြင်း
+          arduino-cli lib update-index
+          arduino-cli lib install "ESP Async WebServer"
           arduino-cli lib install "Adafruit MPU6050"
           arduino-cli lib install "Adafruit Unified Sensor"
           arduino-cli lib install "Adafruit BusIO"
-          
-          # Async WebServer နှင့် TCP ကို Error ကင်းသော Version များအဖြစ် သီးသန့်သွင်းခြင်း
-          arduino-cli lib install --git-url https://github.com/me-no-dev/ESPAsyncWebServer.git
-          arduino-cli lib install --git-url https://github.com/me-no-dev/AsyncTCP.git
 
-      - name: Compile
+      - name: Prepare Sketch
+        run: |
+          mkdir -p sketch/drone
+          cp drone/drone.ino sketch/drone/drone.ino
+
+      - name: Compile (ESP32-C3)
         run: |
           arduino-cli compile \
             --fqbn esp32:esp32:esp32c3 \
             --output-dir build \
-            --export-binaries \
-            drone
+            sketch/drone
 
-      - name: Upload Artifacts
+      - name: Upload Firmware (Artifacts)
         uses: actions/upload-artifact@v4
         with:
-          name: firmware-binaries
+          name: firmware
           path: build/*.bin
-          
