@@ -12,10 +12,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # ✅ Install Arduino CLI via APT (NO PATH ISSUE)
       - name: Install Arduino CLI
         run: |
-          curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh
-          echo "$HOME/bin" >> $GITHUB_PATH
+          sudo apt update
+          sudo apt install -y arduino-cli
           arduino-cli version
 
       - name: Configure Arduino CLI
