@@ -37,11 +37,12 @@ jobs:
 
       - name: Compile
         run: |
+          # Compiling the 'drone' folder which contains 'drone.ino'
           arduino-cli compile \
             --fqbn esp32:esp32:esp32c3 \
             --output-dir build \
             --export-binaries \
-            .
+            drone
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
