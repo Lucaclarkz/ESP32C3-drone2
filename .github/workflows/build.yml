@@ -7,16 +7,16 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-22.04   # 👈 24.04 မသုံးဘူး
+    runs-on: ubuntu-22.04
 
     steps:
       - uses: actions/checkout@v4
 
-      # ✅ Official Arduino CLI Setup
+      # ✅ Arduino CLI Setup (PIN VERSION)  <-- အရေးကြီးဆုံး
       - name: Setup Arduino CLI
         uses: arduino/setup-arduino-cli@v1
         with:
-          version: latest
+          version: "1.4.1"   # ✅ latest မသုံးဘဲ pin လုပ်
 
       - name: Configure CLI
         run: |
