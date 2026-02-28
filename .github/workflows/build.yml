@@ -29,12 +29,14 @@ jobs:
 
       - name: Install Libraries
         run: |
-          # တည်ငြိမ်တဲ့ version တွေကို သတ်မှတ်ပြီး သွင်းခြင်း
-          arduino-cli lib install "ESP Async WebServer@1.2.3"
-          arduino-cli lib install "AsyncTCP@1.1.1"
+          # Git မှတစ်ဆင့် တည်ငြိမ်သော Version များကို တိုက်ရိုက်သွင်းခြင်း
           arduino-cli lib install "Adafruit MPU6050"
           arduino-cli lib install "Adafruit Unified Sensor"
           arduino-cli lib install "Adafruit BusIO"
+          
+          # Async WebServer နှင့် TCP ကို Error ကင်းသော Version များအဖြစ် သီးသန့်သွင်းခြင်း
+          arduino-cli lib install --git-url https://github.com/me-no-dev/ESPAsyncWebServer.git
+          arduino-cli lib install --git-url https://github.com/me-no-dev/AsyncTCP.git
 
       - name: Compile
         run: |
