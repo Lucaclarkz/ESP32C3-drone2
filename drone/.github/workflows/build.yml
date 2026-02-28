@@ -1,0 +1,56 @@
+name: Build ESP32-C3 Firmware
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Arduino CLI
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh
+          echo "$HOME/bin" >> $GITHUB_PATH
+          arduino-cli version
+
+      - name: Configure Arduino CLI
+        run: |
+          arduino-cli config init
+          arduino-cli config set board_manager.additional_urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
+
+      - name: Install ESP32 Core 2.0.17
+        run: |
+          arduino-cli core update-index
+          arduino-cli core install esp32:esp32@2.0.17
+
+      - name: Install Libraries
+        run: |
+          arduino-cli lib update-index
+          arduino-cli lib install "ESP Async WebServer"
+          arduino-cli lib install "AsyncTCP"
+          arduino-cli lib install "Adafruit MPU6050"
+          arduino-cli lib install "Adafruit Unified Sensor"
+          arduino-cli lib install "Adafruit BusIO"
+
+      - name: Prepare Sketch
+        run: |
+          mkdir -p sketch/drone
+          cp drone/drone.ino sketch/drone/drone.ino
+
+      - name: Compile ESP32-C3
+        run: |
+          arduino-cli compile \
+            --fqbn esp32:esp32:esp32c3 \
+            --output-dir build \
+            sketch/drone
+
+      - name: Upload Firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware
+          path: build/*.bin
