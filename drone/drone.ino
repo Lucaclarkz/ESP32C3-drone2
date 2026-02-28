@@ -20,7 +20,6 @@
 */
 
 #include <WiFi.h>
-#include <AsyncTCP.h>
 #include <ESPAsyncWebServer.h>
 #include <Wire.h>
 #include <Adafruit_MPU6050.h>
