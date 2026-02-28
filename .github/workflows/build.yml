@@ -29,15 +29,15 @@ jobs:
 
       - name: Install Libraries
         run: |
-          arduino-cli lib install "ESP Async WebServer"
-          arduino-cli lib install "AsyncTCP"
+          # တည်ငြိမ်တဲ့ version တွေကို သတ်မှတ်ပြီး သွင်းခြင်း
+          arduino-cli lib install "ESP Async WebServer@1.2.3"
+          arduino-cli lib install "AsyncTCP@1.1.1"
           arduino-cli lib install "Adafruit MPU6050"
           arduino-cli lib install "Adafruit Unified Sensor"
           arduino-cli lib install "Adafruit BusIO"
 
       - name: Compile
         run: |
-          # Compiling the 'drone' folder which contains 'drone.ino'
           arduino-cli compile \
             --fqbn esp32:esp32:esp32c3 \
             --output-dir build \
