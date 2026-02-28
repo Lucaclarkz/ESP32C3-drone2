@@ -8,6 +8,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v4
 
@@ -18,24 +19,24 @@ jobs:
           sudo mv arduino-cli /usr/local/bin/
           arduino-cli version
 
-      - name: Configure Arduino CLI
+      - name: Configure CLI
         run: |
           arduino-cli config init
           arduino-cli config set board_manager.additional_urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
 
-      - name: Install ESP32 Core (LOCK)
+      - name: Install ESP32 Core
         run: |
           arduino-cli core update-index
           arduino-cli core install esp32:esp32@2.0.17
 
-      - name: Install Libraries (PIN versions)
+      - name: Install Libraries (Correct Names)
         run: |
           arduino-cli lib update-index
-          arduino-cli lib install "AsyncTCP@1.1.1"
-          arduino-cli lib install "ESP Async WebServer@1.2.3"
-          arduino-cli lib install "Adafruit MPU6050@2.2.9"
-          arduino-cli lib install "Adafruit Unified Sensor@1.1.15"
-          arduino-cli lib install "Adafruit BusIO@1.17.4"
+          arduino-cli lib install AsyncTCP@1.1.1
+          arduino-cli lib install ESPAsyncWebServer@1.2.3
+          arduino-cli lib install Adafruit_MPU6050@2.2.9
+          arduino-cli lib install Adafruit_Unified_Sensor@1.1.15
+          arduino-cli lib install Adafruit_BusIO@1.17.4
 
       - name: Prepare Sketch
         run: |
