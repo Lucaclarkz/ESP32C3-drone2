@@ -31,7 +31,7 @@ jobs:
           arduino-cli core update-index
           arduino-cli core install esp32:esp32@2.0.17
 
-      - name: Install Libraries (GitHub for Async WebServer)
+      - name: Install Libraries (Async + MPU6050)
         run: |
           arduino-cli lib update-index
 
@@ -39,10 +39,10 @@ jobs:
           arduino-cli lib install --git-url https://github.com/me-no-dev/AsyncTCP.git
           arduino-cli lib install --git-url https://github.com/me-no-dev/ESPAsyncWebServer.git
 
-          # Sensors
-          arduino-cli lib install Adafruit_MPU6050
-          arduino-cli lib install Adafruit_Unified_Sensor
-          arduino-cli lib install Adafruit_BusIO
+          # Adafruit libs (try Library Manager official names first)
+          arduino-cli lib install "Adafruit MPU6050"
+          arduino-cli lib install "Adafruit Unified Sensor"
+          arduino-cli lib install "Adafruit BusIO"
 
       - name: Prepare Sketch
         run: |
