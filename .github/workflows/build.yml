@@ -8,7 +8,6 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v4
 
@@ -19,24 +18,24 @@ jobs:
           sudo mv arduino-cli /usr/local/bin/
           arduino-cli version
 
-      - name: Configure CLI
+      - name: Configure Arduino CLI
         run: |
           arduino-cli config init
           arduino-cli config set board_manager.additional_urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
 
-      - name: Install ESP32 Core
+      - name: Install ESP32 Core (LOCK)
         run: |
           arduino-cli core update-index
           arduino-cli core install esp32:esp32@2.0.17
 
-      - name: Install Libraries
+      - name: Install Libraries (PIN versions)
         run: |
           arduino-cli lib update-index
-          arduino-cli lib install "AsyncTCP"
-          arduino-cli lib install "ESP Async WebServer"
-          arduino-cli lib install "Adafruit MPU6050"
-          arduino-cli lib install "Adafruit Unified Sensor"
-          arduino-cli lib install "Adafruit BusIO"
+          arduino-cli lib install "AsyncTCP@1.1.1"
+          arduino-cli lib install "ESP Async WebServer@1.2.3"
+          arduino-cli lib install "Adafruit MPU6050@2.2.9"
+          arduino-cli lib install "Adafruit Unified Sensor@1.1.15"
+          arduino-cli lib install "Adafruit BusIO@1.17.4"
 
       - name: Prepare Sketch
         run: |
@@ -50,7 +49,7 @@ jobs:
             --output-dir build \
             sketch/drone
 
-      - name: Upload Firmware
+      - name: Upload BIN
         uses: actions/upload-artifact@v4
         with:
           name: firmware
