@@ -1,23 +1,3 @@
-/*
-  ESP32-C3 SuperMini Plus + MPU6050
-  Web RC Controller (Drone TX style)
-  - SoftAP: C3-DRONE / 12345678
-  - Web UI: http://192.168.4.1
-  - WS: /ws
-  - Throttle: latching slider (does NOT return) + smoothing ramp
-  - Yaw stick: auto-center
-  - Pitch/Roll stick: auto-center
-  - Modes: ANGLE / RATE
-  - Safety: ARM, KILL, command timeout, auto-disarm
-  - Motor pins fixed:
-      M1 GPIO21 (Front Left)
-      M2 GPIO20 (Front Right)
-      M3 GPIO2  (Rear Right)
-      M4 GPIO3  (Rear Left)
-  - I2C:
-      SDA GPIO7, SCL GPIO6
-*/
-
 #include <WiFi.h>
 #include <ESPAsyncWebServer.h>
 #include <AsyncTCP.h>
@@ -26,21 +6,26 @@
 #include <Adafruit_Sensor.h>
 #include <math.h>
 
-// ===== WiFi SoftAP =====
-static const char* AP_SSID = "C3-DRONE";
+// ================= WIFI (SoftAP) =================
+static const char* AP_SSID = "ESP32C3-DRONE";
 static const char* AP_PASS = "12345678";
 
-// ===== Pins =====
-static const int PIN_M1 = 21;  // Front Left
-static const int PIN_M2 = 20;  // Front Right
-static const int PIN_M3 = 2;   // Rear Right
-static const int PIN_M4 = 3;   // Rear Left
+// ================= PINS (UNCHANGED) ==============
+static const int PIN_M1 = 21;   // Front Left
+static const int PIN_M2 = 20;   // Front Right
+static const int PIN_M3 = 2;    // Rear Right
+static const int PIN_M4 = 3;    // Rear Left
 static const int I2C_SDA = 7;
 static const int I2C_SCL = 6;
 
-// ===== PWM =====
-static const int PWM_FREQ = 20000;        // 20kHz (coreless friendly)
-static const int PWM_RES_BITS = 8;        // 0..255
+// Status LED (onboard) GPIO8
+static const int PIN_LED = 8;
+// If LED is inverted on your board, set to 0
+static const int LED_ON_LEVEL = 1;
+
+// ================= PWM ===========================
+static const int PWM_FREQ = 20000;
+static const int PWM_RES_BITS = 8;
 static const int PWM_MAX = (1 << PWM_RES_BITS) - 1;
 
 static const int CH_M1 = 0;
@@ -48,45 +33,44 @@ static const int CH_M2 = 1;
 static const int CH_M3 = 2;
 static const int CH_M4 = 3;
 
-// Motor tune
-static const int MOTOR_MIN_START = 35;    // start friction
-static const int MOTOR_MAX_LIMIT = 240;   // keep headroom
-static const int THR_RAMP_PER_LOOP = 3;   // smooth ramp (bigger = faster)
+// coreless tune
+static const int MOTOR_MIN_START = 35;
+static const int MOTOR_MAX_LIMIT = 240;
+static const int THR_RAMP_PER_LOOP = 3;
 
-// ===== Loop timing =====
+// ================= LOOP ==========================
 static const float LOOP_HZ = 250.0f;
 static const uint32_t LOOP_US = (uint32_t)(1000000.0f / LOOP_HZ);
 
-// Complementary filter
+// complementary filter
 static const float CF_ALPHA = 0.98f;
 
-// Stick expo
+// expo
 static const float EXPO = 0.35f;
 
-// Safety timeouts
-static const uint32_t CMD_TIMEOUT_MS = 350;
-static const uint32_t DISARM_TIMEOUT_MS = 2000;
+// safety timeouts (more forgiving)
+static const uint32_t CMD_TIMEOUT_MS    = 1200;   // 350 -> 1200
+static const uint32_t DISARM_TIMEOUT_MS = 30000;  // 2000 -> 30000
 
-// ===== Flight modes =====
+// ================= MODES =========================
 enum FlightMode { MODE_ANGLE = 0, MODE_RATE = 1 };
 
-// ===== PID gains (basic stable defaults) =====
-static float Kp_angle = 4.5f;        // deg error -> deg/s target
+// ================= PID ===========================
+static float Kp_angle = 4.5f;
 
 static float Kp_rate_rp = 0.09f;
 static float Ki_rate_rp = 0.18f;
 static float Kd_rate_rp = 0.0025f;
 
-static float Kp_rate_y  = 0.12f;
-static float Ki_rate_y  = 0.10f;
-static float Kd_rate_y  = 0.0f;
+static float Kp_rate_y = 0.12f;
+static float Ki_rate_y = 0.10f;
+static float Kd_rate_y = 0.0f;
 
-// Limits
 static const float MAX_ANGLE_DEG = 30.0f;
 static const float MAX_RATE_RP   = 220.0f;
 static const float MAX_RATE_Y    = 180.0f;
 
-// ===== Globals =====
+// ================= GLOBALS =======================
 Adafruit_MPU6050 mpu;
 AsyncWebServer server(80);
 AsyncWebSocket ws("/ws");
@@ -96,25 +80,25 @@ volatile bool killSwitch = false;
 volatile FlightMode mode = MODE_ANGLE;
 volatile uint32_t lastCmdMs = 0;
 
-// Inputs (from web)
-volatile float in_throttle = 0.0f;   // 0..1 (latching)
-volatile float in_roll     = 0.0f;   // -1..1
-volatile float in_pitch    = 0.0f;   // -1..1
-volatile float in_yaw      = 0.0f;   // -1..1
-volatile float in_thrLimit = 1.0f;   // 0.2..1.0
+volatile float in_throttle = 0.0f;  // 0..1
+volatile float in_roll     = 0.0f;  // -1..1
+volatile float in_pitch    = 0.0f;  // -1..1
+volatile float in_yaw      = 0.0f;  // -1..1
+volatile float in_thrLimit = 1.0f;  // 0.2..1.0
 
-// State
 static float roll_deg = 0, pitch_deg = 0;
 static float gyro_bias_x = 0, gyro_bias_y = 0, gyro_bias_z = 0;
 
-// PID integrators & prev error
 static float i_roll = 0, i_pitch = 0, i_yaw = 0;
 static float last_err_r = 0, last_err_p = 0, last_err_y = 0;
 
-// Throttle smoothing
 static int thr_duty_smooth = 0;
 
-// ===== Utils =====
+// LED status state
+static uint32_t ledMs = 0;
+static bool ledState = false;
+
+// ================= UTIL ==========================
 static inline float clampf(float x, float a, float b) {
   return (x < a) ? a : (x > b) ? b : x;
 }
@@ -122,6 +106,9 @@ static inline float expoCurve(float x, float expo) {
   float ax = fabsf(x);
   float y = (1.0f - expo) * x + expo * x * ax * ax;
   return clampf(y, -1.0f, 1.0f);
+}
+static inline void ledSet(bool on) {
+  digitalWrite(PIN_LED, on ? LED_ON_LEVEL : !LED_ON_LEVEL);
 }
 static void motorWrite(int ch, int duty) {
   duty = constrain(duty, 0, PWM_MAX);
@@ -134,15 +121,13 @@ static void allMotorsOff() {
   motorWrite(CH_M4, 0);
 }
 
-// ===== Calibration =====
+// ================= CALIB =========================
 static void calibrateGyro(uint16_t samples = 800) {
   float sx = 0, sy = 0, sz = 0;
   sensors_event_t a, g, t;
   for (uint16_t i = 0; i < samples; i++) {
     mpu.getEvent(&a, &g, &t);
-    sx += g.gyro.x;
-    sy += g.gyro.y;
-    sz += g.gyro.z;
+    sx += g.gyro.x; sy += g.gyro.y; sz += g.gyro.z;
     delay(2);
   }
   gyro_bias_x = sx / samples;
@@ -153,192 +138,207 @@ static void calibrateGyro(uint16_t samples = 800) {
   last_err_r = last_err_p = last_err_y = 0;
 }
 
-// ===== Web UI (TX style) =====
+// ================= WEB UI =======================
 static const char index_html[] PROGMEM = R"rawliteral(
-<!doctype html><html><head>
-<meta name=viewport content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<!DOCTYPE html><html><head>
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
 <title>C3 DRONE</title>
 <style>
-:root{--bg:#0b0f14;--p:#121a23;--l:#1f2a36;--a:#34d399;--w:#fb7185;--t:#e5e7eb;--m:#94a3b8}
-body{margin:0;background:var(--bg);color:var(--t);font-family:system-ui;overflow:hidden;touch-action:none}
-.top{display:flex;justify-content:space-between;align-items:center;padding:10px 12px;background:linear-gradient(180deg,#0f172a,#0b0f14);border-bottom:1px solid var(--l)}
-.title{font-weight:900;letter-spacing:1px}
-.pill{padding:6px 10px;border-radius:999px;background:var(--p);border:1px solid var(--l);font-size:12px;color:var(--m)}
+:root{--bg:#0b0f14;--panel:#121a23;--line:#1f2a36;--acc:#34d399;--warn:#fb7185;--txt:#e5e7eb;--mut:#94a3b8;}
+body{margin:0;background:var(--bg);color:var(--txt);font-family:system-ui;overflow:hidden;touch-action:none}
+.top{display:flex;align-items:center;justify-content:space-between;padding:10px 12px;background:linear-gradient(180deg,#0f172a,#0b0f14);border-bottom:1px solid var(--line)}
+.title{font-weight:800;letter-spacing:1px}
+.pill{padding:6px 10px;border-radius:999px;background:var(--panel);border:1px solid var(--line);font-size:12px;color:var(--mut)}
 .wrap{display:flex;gap:10px;padding:10px;height:calc(100vh - 58px);box-sizing:border-box}
 .col{flex:1;display:flex;flex-direction:column;gap:10px}
-.card{background:var(--p);border:1px solid var(--l);border-radius:16px;padding:10px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:10px}
 .row{display:flex;gap:10px;align-items:center;justify-content:space-between}
-button{border:none;border-radius:14px;padding:12px;font-weight:900;color:#0b0f14;background:var(--a);width:100%}
+button{border:none;border-radius:14px;padding:12px;font-weight:900;color:#0b0f14;background:var(--acc);width:100%}
 button.secondary{background:#60a5fa}
-button.warn{background:var(--w);color:white}
+button.warn{background:var(--warn);color:white}
 button.off{background:#334155;color:#e2e8f0}
-.small{font-size:12px;color:var(--m)}
-.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
-input[type=range]{width:100%}
-
+.small{font-size:12px;color:var(--mut)}
 .joyArea{display:flex;justify-content:space-between;gap:10px}
 .joyBox{flex:1;display:flex;flex-direction:column;gap:10px;align-items:center;justify-content:center}
-.joyBase{width:170px;height:170px;border-radius:50%;
-  background:radial-gradient(circle at 30% 30%,rgba(255,255,255,.06),rgba(255,255,255,.02));
-  border:2px solid rgba(52,211,153,.35);position:relative}
-.stick{width:60px;height:60px;border-radius:50%;
-  background:radial-gradient(circle at 30% 30%,rgba(52,211,153,.95),rgba(52,211,153,.55));
-  position:absolute;top:55px;left:55px;box-shadow:0 0 18px rgba(52,211,153,.6);touch-action:none}
-
-.thrWrap{width:58px;height:240px;border-radius:18px;background:#0b1220;border:1px solid var(--l);position:relative;overflow:hidden}
-.thrFill{position:absolute;bottom:0;left:0;right:0;height:0;background:linear-gradient(180deg,rgba(52,211,153,.08),rgba(52,211,153,.6))}
-.thrKnob{width:58px;height:48px;border-radius:18px;background:rgba(255,255,255,.10);
-  border:1px solid rgba(255,255,255,.16);position:absolute;left:0;bottom:0;
-  display:flex;align-items:center;justify-content:center;color:var(--t);font-weight:900;touch-action:none}
-</style></head><body>
-<div class=top>
-  <div class=title>C3 DRONE</div>
-  <div class=pill id=stat>WS: --</div>
-</div>
-
-<div class=wrap><div class=col>
-  <div class=card>
-    <div class=row>
-      <button id=armBtn class=warn onclick=toggleArm()>ARM</button>
-      <button id=killBtn class=off  onclick=toggleKill()>KILL</button>
+.joyBase{width:170px;height:170px;border-radius:50%;background:radial-gradient(circle at 30% 30%,rgba(255,255,255,.06),rgba(255,255,255,.02));border:2px solid rgba(52,211,153,.35);position:relative}
+.stick{width:60px;height:60px;border-radius:50%;background:radial-gradient(circle at 30% 30%,rgba(52,211,153,.95),rgba(52,211,153,.55));position:absolute;top:55px;left:55px;box-shadow:0 0 18px rgba(52,211,153,.6);touch-action:none}
+.thrWrap{width:54px;height:240px;border-radius:18px;background:#0b1220;border:1px solid var(--line);position:relative;overflow:hidden}
+.thrFill{position:absolute;bottom:0;left:0;right:0;height:0;background:linear-gradient(180deg,rgba(52,211,153,.1),rgba(52,211,153,.6))}
+.thrKnob{width:54px;height:44px;border-radius:18px;background:rgba(255,255,255,.10);border:1px solid rgba(255,255,255,.16);position:absolute;left:0;bottom:0;display:flex;align-items:center;justify-content:center;color:var(--txt);font-weight:900;touch-action:none}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+input[type="range"]{width:100%}
+</style></head>
+<body>
+<div class="top"><div class="title">C3 DRONE</div><div class="pill" id="stat">WS: --</div></div>
+<div class="wrap"><div class="col">
+  <div class="card">
+    <div class="row">
+      <button id="armBtn" class="warn" onclick="toggleArm()">ARM</button>
+      <button id="killBtn" class="off" onclick="toggleKill()">KILL</button>
     </div>
     <div style="height:10px"></div>
-    <div class=row><button id=modeBtn class=secondary onclick=toggleMode()>MODE: ANGLE</button></div>
+    <div class="row"><button id="modeBtn" class="secondary" onclick="toggleMode()">MODE: ANGLE</button></div>
     <div style="height:10px"></div>
-    <div class=row><button class=off onclick="sendCmd('CAL')">CALIBRATE</button></div>
+    <div class="row"><button class="off" onclick="sendCmd('CAL')">CALIBRATE</button></div>
     <div style="height:10px"></div>
-    <div class=grid>
-      <div class=card>
-        <div class=small>Throttle Limit</div>
-        <input id=thrLim type=range min=20 max=100 value=100 oninput=thrLimitChanged(this.value)>
-        <div class=small><span id=thrLimVal>100</span>%</div>
+    <div class="grid">
+      <div class="card">
+        <div class="small">Throttle Limit</div>
+        <input id="thrLim" type="range" min="20" max="100" value="100" oninput="thrLimitChanged(this.value)">
+        <div class="small"><span id="thrLimVal">100</span>%</div>
       </div>
-      <div class=card>
-        <div class=small>Status</div>
-        <div class=small id=dbg>---</div>
+      <div class="card">
+        <div class="small">Status</div>
+        <div class="small" id="dbg">---</div>
       </div>
     </div>
   </div>
 
-  <div class=card>
-    <div class=joyArea>
-      <div class=joyBox>
-        <div class=small>THROTTLE</div>
-        <div class=thrWrap id=thrWrap>
-          <div class=thrFill id=thrFill></div>
-          <div class=thrKnob id=thrKnob>0%</div>
+  <div class="card">
+    <div class="joyArea">
+      <div class="joyBox">
+        <div class="small">THROTTLE (LATCH)</div>
+        <div class="thrWrap" id="thrWrap">
+          <div class="thrFill" id="thrFill"></div>
+          <div class="thrKnob" id="thrKnob">0%</div>
         </div>
-        <div class=small>YAW</div>
-        <div class=joyBase id=yawBase><div class=stick id=yawStick></div></div>
+
+        <div class="small">YAW (AUTO-CENTER)</div>
+        <div class="joyBase" id="yawBase"><div class="stick" id="yawStick"></div></div>
       </div>
 
-      <div class=joyBox>
-        <div class=small>PITCH / ROLL</div>
-        <div class=joyBase id=prBase><div class=stick id=prStick></div></div>
-        <div class=small>Right stick auto-centers</div>
+      <div class="joyBox">
+        <div class="small">PITCH / ROLL (AUTO-CENTER)</div>
+        <div class="joyBase" id="prBase"><div class="stick" id="prStick"></div></div>
+        <div class="small">Right stick auto-centers</div>
       </div>
     </div>
   </div>
 </div></div>
 
 <script>
-let ws, armed=false, killed=false, mode=0;
-let thr=0, yaw=0, roll=0, pitch=0, thrLimit=1.0;
+let ws;
+let armed=false, killed=false, mode=0;
+let thr=0;                 // 0..1 (latching)
+let yaw=0, roll=0, pitch=0;// -1..1
+let thrLimit=1.0;
 
 function connectWS(){
-  ws=new WebSocket(`ws://${location.host}/ws`);
-  ws.onopen=()=>{stat.innerText="WS: OK";};
-  ws.onclose=()=>{stat.innerText="WS: RECONNECT";setTimeout(connectWS,700);};
-  ws.onmessage=(e)=>{dbg.innerText=e.data;};
+  ws = new WebSocket(`ws://${location.host}/ws`);
+  ws.onopen  = ()=>{ document.getElementById('stat').innerText="WS: OK"; };
+  ws.onclose = ()=>{ document.getElementById('stat').innerText="WS: RECONNECT"; setTimeout(connectWS,700); };
+  ws.onmessage = (e)=>{ document.getElementById('dbg').innerText = e.data; };
 }
 connectWS();
 
-function sendCmd(s){ if(ws&&ws.readyState===1) ws.send(s); }
+function sendCmd(s){ if(ws && ws.readyState===1) ws.send(s); }
+
 function sendControl(){
-  if(ws&&ws.readyState===1){
+  if(ws && ws.readyState===1){
     ws.send(`C:${Math.round(thr*1000)},${Math.round(roll*1000)},${Math.round(pitch*1000)},${Math.round(yaw*1000)},${Math.round(thrLimit*1000)}`);
   }
 }
 
+// IMPORTANT: keepalive (prevents motor stop by timeout)
+setInterval(()=>{ sendControl(); }, 20); // 50Hz
+
 function toggleArm(){
   armed=!armed;
-  if(armed){ armBtn.innerText="ARMED"; armBtn.className=""; sendCmd("ARM"); }
-  else { armBtn.innerText="ARM"; armBtn.className="warn"; sendCmd("DISARM"); }
+  const b=document.getElementById('armBtn');
+  if(armed){ b.innerText="ARMED"; b.className=""; sendCmd("ARM"); }
+  else { b.innerText="ARM"; b.className="warn"; sendCmd("DISARM"); }
 }
 function toggleKill(){
   killed=!killed;
-  if(killed){ killBtn.innerText="KILL ON"; killBtn.className="warn"; sendCmd("KILL1"); }
-  else { killBtn.innerText="KILL"; killBtn.className="off"; sendCmd("KILL0"); }
+  const b=document.getElementById('killBtn');
+  if(killed){ b.innerText="KILL ON"; b.className="warn"; sendCmd("KILL1"); }
+  else { b.innerText="KILL"; b.className="off"; sendCmd("KILL0"); }
 }
 function toggleMode(){
-  mode=(mode===0)?1:0;
-  if(mode===0){ modeBtn.innerText="MODE: ANGLE"; sendCmd("MODE0"); }
-  else{ modeBtn.innerText="MODE: RATE"; sendCmd("MODE1"); }
+  mode = (mode===0)?1:0;
+  const b=document.getElementById('modeBtn');
+  if(mode===0){ b.innerText="MODE: ANGLE"; sendCmd("MODE0"); }
+  else { b.innerText="MODE: RATE"; sendCmd("MODE1"); }
 }
 function thrLimitChanged(v){
-  thrLimVal.innerText=v;
-  thrLimit=Math.max(0.2,Math.min(1.0,v/100));
+  document.getElementById('thrLimVal').innerText=v;
+  thrLimit = Math.max(0.2, Math.min(1.0, v/100));
   sendControl();
 }
 
-/* THROTTLE (LATCHING) */
-(()=>{
-  const wrap=thrWrap, knob=thrKnob, fill=thrFill;
+// Throttle slider (latching)
+(function(){
+  const wrap = document.getElementById('thrWrap');
+  const knob = document.getElementById('thrKnob');
+  const fill = document.getElementById('thrFill');
+
   function setThrFromY(clientY){
-    const r=wrap.getBoundingClientRect();
-    let y=clientY-r.top; y=Math.max(0,Math.min(r.height,y));
-    thr=1.0-(y/r.height); thr=Math.max(0,Math.min(1,thr));
-    const h=Math.round(thr*r.height);
-    fill.style.height=`${h}px`;
-    knob.style.bottom=`${h-knob.offsetHeight/2}px`;
-    knob.innerText=`${Math.round(thr*100)}%`;
+    const r = wrap.getBoundingClientRect();
+    let y = clientY - r.top;
+    y = Math.max(0, Math.min(r.height, y));
+    thr = 1.0 - (y / r.height);
+    thr = Math.max(0, Math.min(1, thr));
+    const h = Math.round(thr * r.height);
+    fill.style.height = `${h}px`;
+    knob.style.bottom = `${h - knob.offsetHeight/2}px`;
+    knob.innerText = `${Math.round(thr*100)}%`;
     sendControl();
   }
-  wrap.addEventListener('touchstart',e=>{setThrFromY(e.touches[0].clientY);},{passive:false});
-  wrap.addEventListener('touchmove', e=>{e.preventDefault();setThrFromY(e.touches[0].clientY);},{passive:false});
+  wrap.addEventListener('touchstart', (e)=>{ setThrFromY(e.touches[0].clientY); }, {passive:false});
+  wrap.addEventListener('touchmove',  (e)=>{ e.preventDefault(); setThrFromY(e.touches[0].clientY); }, {passive:false});
 })();
 
-/* YAW (AUTO-CENTER) */
-(()=>{
-  const base=yawBase, stick=yawStick, R=50;
+// Yaw joystick (auto-center)
+(function(){
+  const base=document.getElementById('yawBase');
+  const stick=document.getElementById('yawStick');
+  const R=50;
   function setYaw(t){
     const r=base.getBoundingClientRect();
-    let x=t.clientX-r.left-r.width/2;
-    x=Math.max(-R,Math.min(R,x));
+    let x=t.clientX - r.left - r.width/2;
+    x=Math.max(-R, Math.min(R, x));
     stick.style.transform=`translate(${x}px,0px)`;
-    yaw=(x/R); sendControl();
+    yaw = (x/R);
+    sendControl();
   }
-  base.ontouchstart=e=>setYaw(e.touches[0]);
-  base.ontouchmove=e=>{e.preventDefault();setYaw(e.touches[0]);};
-  base.ontouchend=()=>{stick.style.transform=`translate(0px,0px)`;yaw=0;sendControl();};
+  base.ontouchstart=(e)=>{ setYaw(e.touches[0]); };
+  base.ontouchmove =(e)=>{ e.preventDefault(); setYaw(e.touches[0]); };
+  base.ontouchend  =()=>{ stick.style.transform=`translate(0px,0px)`; yaw=0; sendControl(); };
 })();
 
-/* PITCH/ROLL (AUTO-CENTER) */
-(()=>{
-  const base=prBase, stick=prStick, R=55;
+// Pitch/Roll joystick (auto-center)
+(function(){
+  const base=document.getElementById('prBase');
+  const stick=document.getElementById('prStick');
+  const R=55;
   function setPR(t){
     const r=base.getBoundingClientRect();
-    let x=t.clientX-r.left-r.width/2;
-    let y=t.clientY-r.top-r.height/2;
+    let x=t.clientX - r.left - r.width/2;
+    let y=t.clientY - r.top  - r.height/2;
     const mag=Math.sqrt(x*x+y*y);
-    if(mag>R){ x=x*(R/mag); y=y*(R/mag); }
+    if(mag>R){ x = x*(R/mag); y = y*(R/mag); }
     stick.style.transform=`translate(${x}px,${y}px)`;
-    roll=x/R; pitch=-y/R; sendControl();
+    roll = x/R;
+    pitch = -y/R;
+    sendControl();
   }
-  base.ontouchstart=e=>setPR(e.touches[0]);
-  base.ontouchmove=e=>{e.preventDefault();setPR(e.touches[0]);};
-  base.ontouchend=()=>{stick.style.transform=`translate(0px,0px)`;roll=0;pitch=0;sendControl();};
+  base.ontouchstart=(e)=>{ setPR(e.touches[0]); };
+  base.ontouchmove =(e)=>{ e.preventDefault(); setPR(e.touches[0]); };
+  base.ontouchend  =()=>{ stick.style.transform=`translate(0px,0px)`; roll=0; pitch=0; sendControl(); };
 })();
-</script></body></html>
+</script>
+</body></html>
 )rawliteral";
 
-// ===== WS handler =====
+// ================= WS ============================
 static void onWsEvent(AsyncWebSocket *server_, AsyncWebSocketClient *client,
                       AwsEventType type, void *arg, uint8_t *data, size_t len) {
   if (type != WS_EVT_DATA || len == 0) return;
 
-  String msg; msg.reserve(len + 1);
+  String msg;
+  msg.reserve(len + 1);
   for (size_t i = 0; i < len; i++) msg += (char)data[i];
+
   lastCmdMs = millis();
 
   if (msg == "ARM") {
@@ -355,6 +355,7 @@ static void onWsEvent(AsyncWebSocket *server_, AsyncWebSocketClient *client,
   if (msg == "KILL0")  { killSwitch = false; client->text("KILL OFF"); return; }
   if (msg == "MODE0")  { mode = MODE_ANGLE; client->text("MODE ANGLE"); return; }
   if (msg == "MODE1")  { mode = MODE_RATE;  client->text("MODE RATE");  return; }
+
   if (msg == "CAL") {
     armed = false;
     client->text("CAL...");
@@ -366,10 +367,10 @@ static void onWsEvent(AsyncWebSocket *server_, AsyncWebSocketClient *client,
   if (msg.startsWith("C:")) {
     int t, r, p, y, lim;
     if (sscanf(msg.c_str(), "C:%d,%d,%d,%d,%d", &t, &r, &p, &y, &lim) == 5) {
-      float thr = clampf(t / 1000.0f, 0.0f, 1.0f);
-      float rr  = clampf(r / 1000.0f, -1.0f, 1.0f);
-      float pp  = clampf(p / 1000.0f, -1.0f, 1.0f);
-      float yy  = clampf(y / 1000.0f, -1.0f, 1.0f);
+      float thr = clampf(t   / 1000.0f, 0.0f, 1.0f);
+      float rr  = clampf(r   / 1000.0f, -1.0f, 1.0f);
+      float pp  = clampf(p   / 1000.0f, -1.0f, 1.0f);
+      float yy  = clampf(y   / 1000.0f, -1.0f, 1.0f);
       float ll  = clampf(lim / 1000.0f, 0.2f, 1.0f);
 
       rr = expoCurve(rr, EXPO);
@@ -385,34 +386,53 @@ static void onWsEvent(AsyncWebSocket *server_, AsyncWebSocketClient *client,
   }
 }
 
-// ===== Setup =====
+// ================= LED STATUS ====================
+static void updateStatusLed() {
+  uint32_t now = millis();
+  int sta = WiFi.softAPgetStationNum(); // phone connected?
+  if (sta > 0) {
+    ledSet(true); // connected -> solid ON
+    return;
+  }
+  // not connected -> blink
+  if (now - ledMs >= 250) { // 2Hz
+    ledMs = now;
+    ledState = !ledState;
+    ledSet(ledState);
+  }
+}
+
+// ================= SETUP =========================
 void setup() {
   Serial.begin(115200);
-  delay(150);
+  delay(80);
+
+  pinMode(PIN_LED, OUTPUT);
+  ledSet(false);
 
   Wire.begin(I2C_SDA, I2C_SCL);
   Wire.setClock(400000);
 
   if (!mpu.begin()) {
-    Serial.println("MPU6050 init failed!");
-    while (1) delay(100);
+    while (1) { updateStatusLed(); delay(10); }
   }
+
   mpu.setAccelerometerRange(MPU6050_RANGE_8_G);
   mpu.setGyroRange(MPU6050_RANGE_500_DEG);
   mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);
 
-  // PWM
   ledcSetup(CH_M1, PWM_FREQ, PWM_RES_BITS);
   ledcSetup(CH_M2, PWM_FREQ, PWM_RES_BITS);
   ledcSetup(CH_M3, PWM_FREQ, PWM_RES_BITS);
   ledcSetup(CH_M4, PWM_FREQ, PWM_RES_BITS);
+
   ledcAttachPin(PIN_M1, CH_M1);
   ledcAttachPin(PIN_M2, CH_M2);
   ledcAttachPin(PIN_M3, CH_M3);
   ledcAttachPin(PIN_M4, CH_M4);
+
   allMotorsOff();
 
-  // WiFi AP + Server
   WiFi.mode(WIFI_AP);
   WiFi.softAP(AP_SSID, AP_PASS);
 
@@ -423,26 +443,30 @@ void setup() {
   });
   server.begin();
 
-  delay(500);
-  calibrateGyro();   // keep still at boot
-  lastCmdMs = millis();
+  delay(400);
+  calibrateGyro();
 
-  Serial.print("AP IP: ");
-  Serial.println(WiFi.softAPIP());
+  lastCmdMs = millis();
 }
 
-// ===== Loop =====
+// ================= LOOP ==========================
 void loop() {
   ws.cleanupClients();
+  updateStatusLed();
 
   uint32_t nowMs = millis();
 
-  // failsafe
+  // Failsafe: if no packets -> zero sticks/throttle
   if (armed && (nowMs - lastCmdMs > CMD_TIMEOUT_MS)) {
     in_throttle = 0.0f;
     in_roll = in_pitch = in_yaw = 0.0f;
   }
-  if (armed && (nowMs - lastCmdMs > DISARM_TIMEOUT_MS)) armed = false;
+
+  // Long idle -> auto disarm (very long)
+  if (armed && (nowMs - lastCmdMs > DISARM_TIMEOUT_MS)) {
+    armed = false;
+  }
+
   if (killSwitch) armed = false;
 
   static uint32_t lastUs = micros();
@@ -456,21 +480,17 @@ void loop() {
   sensors_event_t a, g, temp;
   mpu.getEvent(&a, &g, &temp);
 
-  // Gyro corrected (deg/s)
   float gx = (g.gyro.x - gyro_bias_x) * 180.0f / PI;
   float gy = (g.gyro.y - gyro_bias_y) * 180.0f / PI;
   float gz = (g.gyro.z - gyro_bias_z) * 180.0f / PI;
 
-  // Acc angles
   float accRoll  = atan2f(a.acceleration.y, a.acceleration.z) * 180.0f / PI;
   float accPitch = atan2f(-a.acceleration.x,
-                          sqrtf(a.acceleration.y * a.acceleration.y + a.acceleration.z * a.acceleration.z)) * 180.0f / PI;
+                    sqrtf(a.acceleration.y*a.acceleration.y + a.acceleration.z*a.acceleration.z)) * 180.0f / PI;
 
-  // Complementary filter
   roll_deg  = CF_ALPHA * (roll_deg  + gx * dt) + (1.0f - CF_ALPHA) * accRoll;
   pitch_deg = CF_ALPHA * (pitch_deg + gy * dt) + (1.0f - CF_ALPHA) * accPitch;
 
-  // Desired rates
   float des_rate_roll = 0, des_rate_pitch = 0, des_rate_yaw = 0;
 
   if (mode == MODE_ANGLE) {
@@ -484,25 +504,21 @@ void loop() {
   }
   des_rate_yaw = in_yaw * MAX_RATE_Y;
 
-  // Rate PID roll
   float err_r = des_rate_roll - gx;
   i_roll = clampf(i_roll + err_r * dt, -200.0f, 200.0f);
   float d_r = (err_r - last_err_r) / dt; last_err_r = err_r;
   float out_r = Kp_rate_rp * err_r + Ki_rate_rp * i_roll + Kd_rate_rp * d_r;
 
-  // Rate PID pitch
   float err_p = des_rate_pitch - gy;
   i_pitch = clampf(i_pitch + err_p * dt, -200.0f, 200.0f);
   float d_p = (err_p - last_err_p) / dt; last_err_p = err_p;
   float out_p = Kp_rate_rp * err_p + Ki_rate_rp * i_pitch + Kd_rate_rp * d_p;
 
-  // Rate PID yaw
   float err_y = des_rate_yaw - gz;
   i_yaw = clampf(i_yaw + err_y * dt, -200.0f, 200.0f);
   float d_y = (err_y - last_err_y) / dt; last_err_y = err_y;
   float out_y = Kp_rate_y * err_y + Ki_rate_y * i_yaw + Kd_rate_y * d_y;
 
-  // Throttle -> duty (latching slider already in_throttle)
   float thr = clampf(in_throttle, 0.0f, 1.0f) * clampf(in_thrLimit, 0.2f, 1.0f);
 
   int targetDuty = 0;
@@ -513,7 +529,6 @@ void loop() {
     targetDuty = 0;
   }
 
-  // Smooth ramp (controller-like)
   if (targetDuty > thr_duty_smooth) thr_duty_smooth = min(targetDuty, thr_duty_smooth + THR_RAMP_PER_LOOP);
   else thr_duty_smooth = max(targetDuty, thr_duty_smooth - THR_RAMP_PER_LOOP);
 
@@ -522,14 +537,12 @@ void loop() {
   const float yawSign = 1.0f;
   float yawTerm = yawSign * out_y;
 
-  // X mix
   float m1 = base - out_p + out_r - yawTerm;
   float m2 = base - out_p - out_r + yawTerm;
   float m3 = base + out_p - out_r - yawTerm;
   float m4 = base + out_p + out_r + yawTerm;
 
-  // headroom clamp shift
-  float maxOut = fmaxf(fmaxf(m1, m2), fmaxf(m3, m4));
+  float maxOut = fmaxf(fmaxf(m1,m2), fmaxf(m3,m4));
   if (maxOut > MOTOR_MAX_LIMIT) {
     float shift = maxOut - MOTOR_MAX_LIMIT;
     m1 -= shift; m2 -= shift; m3 -= shift; m4 -= shift;
@@ -549,13 +562,12 @@ void loop() {
     motorWrite(CH_M4, (int)m4);
   }
 
-  // debug to UI
   static uint32_t dbgMs = 0;
-  if (nowMs - dbgMs > 200) {
+  if (nowMs - dbgMs > 250) {
     dbgMs = nowMs;
     char buf[96];
-    snprintf(buf, sizeof(buf), "ARM:%d MODE:%c THR:%d R:%.1f P:%.1f",
-             armed ? 1 : 0, (mode == MODE_ANGLE) ? 'A' : 'R', thr_duty_smooth, roll_deg, pitch_deg);
+    snprintf(buf, sizeof(buf), "ARM:%d MODE:%c STA:%d R:%.1f P:%.1f",
+             armed?1:0, (mode==MODE_ANGLE)?'A':'R', WiFi.softAPgetStationNum(), roll_deg, pitch_deg);
     ws.textAll(buf);
   }
 }
